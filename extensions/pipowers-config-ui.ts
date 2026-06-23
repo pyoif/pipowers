@@ -63,10 +63,48 @@ async function pickLayer(ctx: ExtensionContext, defaultLayer: ConfigLayer): Prom
     return picked.startsWith("Project") ? "project" : "global";
 }
 
-// Placeholder for Task 10. Returns the current tunables so the file compiles
-// and the tests pass; Task 10 will replace this with a real editor.
-async function pickTunables(_ctx: ExtensionContext, current: PipowersConfig | null): Promise<PipowersConfig["tunables"]> {
-    return current?.tunables ?? ADVISORY_DEFAULTS.tunables;
+export async function pickTunables(
+    ctx: ExtensionContext,
+    current: PipowersConfig,
+): Promise<PipowersConfig["tunables"]> {
+    const t = JSON.parse(JSON.stringify(current.tunables));
+
+    while (true) {
+        const choice = await ctx.ui.select(
+            `Tunables:\n  Plan tracker\n    Required: [${t.planTracker.required ? "✓" : " "}]\n    Protected paths: ${t.planTracker.protectedPaths.length} entries\n  Workflow\n    Process strike limit: ${t.workflow.processStrikeLimit}\n    Practice strike limit: ${t.workflow.practiceStrikeLimit}\n    Allow override: [${t.workflow.allowOverride ? "✓" : " "}]\n  Non-interactive\n    Mode: ${t.nonInteractive.mode}`,
+            [
+                "Required: " + (t.planTracker.required ? "[✓]" : "[ ]"),
+                "Protected paths (edit list)",
+                `Process strike limit (current: ${t.workflow.processStrikeLimit})`,
+                `Practice strike limit (current: ${t.workflow.practiceStrikeLimit})`,
+                "Allow override: " + (t.workflow.allowOverride ? "[✓]" : "[ ]"),
+                `Non-interactive mode (current: ${t.nonInteractive.mode})`,
+                "Save",
+                "Cancel",
+            ],
+        );
+        if (choice === "Cancel") return current.tunables;
+        if (choice === "Save") return t;
+        if (choice.startsWith("Required:")) {
+            t.planTracker.required = !t.planTracker.required;
+        } else if (choice.startsWith("Protected paths")) {
+            const next = await ctx.ui.input("Protected paths (comma-separated globs):", t.planTracker.protectedPaths.join(", "));
+            if (next) t.planTracker.protectedPaths = next.split(",").map((s) => s.trim()).filter(Boolean);
+        } else if (choice.startsWith("Process strike limit")) {
+            const next = await ctx.ui.input("Process strike limit (1-999):", String(t.workflow.processStrikeLimit));
+            const n = parseInt(next ?? "", 10);
+            if (n >= 1 && n <= 999) t.workflow.processStrikeLimit = n;
+        } else if (choice.startsWith("Practice strike limit")) {
+            const next = await ctx.ui.input("Practice strike limit (1-999):", String(t.workflow.practiceStrikeLimit));
+            const n = parseInt(next ?? "", 10);
+            if (n >= 1 && n <= 999) t.workflow.practiceStrikeLimit = n;
+        } else if (choice.startsWith("Allow override:")) {
+            t.workflow.allowOverride = !t.workflow.allowOverride;
+        } else if (choice.startsWith("Non-interactive mode")) {
+            const picked = await ctx.ui.select("Non-interactive mode:", ["advisory", "block"]);
+            if (picked === "advisory" || picked === "block") t.nonInteractive.mode = picked;
+        }
+    }
 }
 
 export function registerConfigCommand(
@@ -83,7 +121,7 @@ export function registerConfigCommand(
             return;
         }
         if (newMode === "custom") {
-            const tunables = await pickTunables(ctx, getConfig());
+            const tunables = await pickTunables(ctx, getConfig() ?? ADVISORY_DEFAULTS);
             await saveConfig(layer, { enforcement: "custom", tunables });
         } else {
             await saveConfig(layer, { enforcement: newMode });
