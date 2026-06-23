@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { deepMerge, resolveMode, ADVISORY_DEFAULTS, STRICT_DEFAULTS, loadConfig, _resetForTest } from "../../extensions/pipowers-config.js";
+import { deepMerge, resolveMode, ADVISORY_DEFAULTS, STRICT_DEFAULTS, loadConfig, _resetForTest, saveConfig } from "../../extensions/pipowers-config.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -115,6 +115,59 @@ describe("loadConfig", () => {
             );
             const result = await loadConfig();
             expect(result.config.enforcement).toBe("advisory");
+        });
+    });
+});
+
+describe("saveConfig", () => {
+    test("creates file at global path with just the change when file does not exist", async () => {
+        await withTempHome(async (home) => {
+            await saveConfig("global", { enforcement: "strict" });
+            const written = fs.readFileSync(
+                path.join(home, ".pi", "agent", "pipowers.toml"),
+                "utf-8",
+            );
+            expect(written).toContain('enforcement = "strict"');
+        });
+    });
+
+    test("creates file at project path with just the change when project file does not exist", async () => {
+        await withTempHome(async (_home, cwd) => {
+            await saveConfig("project", { enforcement: "custom" });
+            const written = fs.readFileSync(path.join(cwd, ".pi", "pipowers.toml"), "utf-8");
+            expect(written).toContain('enforcement = "custom"');
+        });
+    });
+
+    test("deep-merges into existing file (preserves unrelated keys)", async () => {
+        await withTempHome(async (home) => {
+            const target = path.join(home, ".pi", "agent", "pipowers.toml");
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+            fs.writeFileSync(target, 'enforcement = "advisory"\nunrelated = "keep me"\n');
+            await saveConfig("global", { enforcement: "strict" });
+            const written = fs.readFileSync(target, "utf-8");
+            expect(written).toContain('enforcement = "strict"');
+            expect(written).toContain('unrelated = "keep me"');
+        });
+    });
+
+    test("does not leave .tmp file behind on success", async () => {
+        await withTempHome(async (home) => {
+            await saveConfig("global", { enforcement: "advisory" });
+            const target = path.join(home, ".pi", "agent", "pipowers.toml");
+            expect(fs.existsSync(target + ".tmp")).toBe(false);
+        });
+    });
+
+    test("saveConfig then loadConfig round-trips enforcement and tunables", async () => {
+        await withTempHome(async () => {
+            await saveConfig("global", {
+                enforcement: "strict",
+                tunables: STRICT_DEFAULTS.tunables,
+            });
+            const { config } = await loadConfig();
+            expect(config.enforcement).toBe("strict");
+            expect(config.tunables.planTracker.required).toBe(true);
         });
     });
 });

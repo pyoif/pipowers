@@ -7,6 +7,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parse as parseToml } from "smol-toml";
+import { stringify as stringifyToml } from "smol-toml";
 import { log } from "./logging.js";
 
 export type Enforcement = "advisory" | "strict" | "custom";
@@ -120,6 +121,31 @@ export function globalConfigPath(): string {
 
 export function projectConfigPath(): string {
     return path.join(getCwd(), ".pi", "pipowers.toml");
+}
+
+export type ConfigLayer = "global" | "project";
+
+export async function saveConfig(layer: ConfigLayer, change: Partial<PipowersConfig>): Promise<void> {
+    const target = layer === "global" ? globalConfigPath() : projectConfigPath();
+    const tmp = target + ".tmp";
+
+    let existing: Record<string, any> = {};
+    if (fs.existsSync(target)) {
+        try {
+            existing = parseToml(fs.readFileSync(target, "utf-8")) as Record<string, any>;
+        } catch (err) {
+            log.error(
+                `Refusing to overwrite malformed ${target}. Fix the file first.`,
+            );
+            throw err;
+        }
+    }
+
+    const merged = deepMerge(existing, change as any);
+    const toml = stringifyToml(merged);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(tmp, toml);
+    fs.renameSync(tmp, target);
 }
 
 export interface LoadResult {
