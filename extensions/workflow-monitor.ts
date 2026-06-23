@@ -235,7 +235,7 @@ export default function (pi: ExtensionAPI) {
       onChange: async () => {
         const { config, effectiveSource } = await loadConfig();
         currentConfig = config;
-        currentEffectiveSource = effectiveSource;
+        currentEffectiveSource = effectiveSource ?? "default";
       },
       debounceMs: 250,
     });
@@ -565,7 +565,7 @@ export default function (pi: ExtensionAPI) {
       });
       if (violation?.shouldBlock) {
         strikes[violation.bucket] = (strikes[violation.bucket] ?? 0) + 1;
-        if (!ctx.hasUI || currentConfig.tunables.nonInteractive.mode === "advisory") {
+        if (!ctx.hasUI) {
           return { warning: getWarningFor(violation) };
         }
         const promptOptions = getPromptOptions(violation, currentConfig);
