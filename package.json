@@ -45,5 +45,8 @@
   "devDependencies": {
     "@biomejs/biome": "^2.3.15",
     "vitest": "^4.0.18"
+  },
+  "dependencies": {
+    "smol-toml": "^1.7.0"
   }
 }

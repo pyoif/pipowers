@@ -1,5 +1,8 @@
 import { describe, expect, test } from "vitest";
-import { deepMerge, resolveMode, ADVISORY_DEFAULTS, STRICT_DEFAULTS } from "../../extensions/pipowers-config.js";
+import { deepMerge, resolveMode, ADVISORY_DEFAULTS, STRICT_DEFAULTS, loadConfig, _resetForTest } from "../../extensions/pipowers-config.js";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
 
 describe("deepMerge", () => {
     test("merges nested objects without mutating inputs", () => {
@@ -42,5 +45,76 @@ describe("STRICT_DEFAULTS", () => {
         expect(STRICT_DEFAULTS.tunables.workflow.processStrikeLimit).toBe(1);
         expect(STRICT_DEFAULTS.tunables.workflow.practiceStrikeLimit).toBe(2);
         expect(STRICT_DEFAULTS.tunables.workflow.allowOverride).toBe(true);
+    });
+});
+
+function withTempHome<T>(fn: (home: string, cwd: string) => Promise<T> | T): Promise<T> {
+    return new Promise(async (resolve, reject) => {
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), "pipowers-home-"));
+        const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pipowers-cwd-"));
+        _resetForTest({ home, cwd });
+        try {
+            resolve(await fn(home, cwd));
+        } catch (err) {
+            reject(err);
+        } finally {
+            fs.rmSync(home, { recursive: true, force: true });
+            fs.rmSync(cwd, { recursive: true, force: true });
+        }
+    });
+}
+
+describe("loadConfig", () => {
+    test("returns advisory defaults when neither file exists (no disk write)", async () => {
+        await withTempHome(async (home, cwd) => {
+            const result = await loadConfig();
+            expect(result.config.enforcement).toBe("advisory");
+            expect(result.config.tunables.planTracker.required).toBe(false);
+            // No file should have been created
+            expect(fs.existsSync(path.join(home, ".pi", "agent", "pipowers.toml"))).toBe(false);
+            expect(fs.existsSync(path.join(cwd, ".pi", "pipowers.toml"))).toBe(false);
+        });
+    });
+
+    test("returns global values when only global exists", async () => {
+        await withTempHome(async (home) => {
+            fs.mkdirSync(path.join(home, ".pi", "agent"), { recursive: true });
+            fs.writeFileSync(
+                path.join(home, ".pi", "agent", "pipowers.toml"),
+                'enforcement = "strict"\n',
+            );
+            const result = await loadConfig();
+            expect(result.config.enforcement).toBe("strict");
+            expect(result.config.tunables.planTracker.required).toBe(true);
+        });
+    });
+
+    test("project overrides global per leaf", async () => {
+        await withTempHome(async (home, cwd) => {
+            fs.mkdirSync(path.join(home, ".pi", "agent"), { recursive: true });
+            fs.writeFileSync(
+                path.join(home, ".pi", "agent", "pipowers.toml"),
+                'enforcement = "advisory"\n',
+            );
+            fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+            fs.writeFileSync(
+                path.join(cwd, ".pi", "pipowers.toml"),
+                'enforcement = "strict"\n',
+            );
+            const result = await loadConfig();
+            expect(result.config.enforcement).toBe("strict");
+        });
+    });
+
+    test("malformed TOML returns defaults and reports error", async () => {
+        await withTempHome(async (home) => {
+            fs.mkdirSync(path.join(home, ".pi", "agent"), { recursive: true });
+            fs.writeFileSync(
+                path.join(home, ".pi", "agent", "pipowers.toml"),
+                "this is = not valid toml [[[",
+            );
+            const result = await loadConfig();
+            expect(result.config.enforcement).toBe("advisory");
+        });
     });
 });

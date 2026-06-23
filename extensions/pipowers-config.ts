@@ -3,6 +3,12 @@
  * Owns the TOML config files at ~/.pi/agent/pipowers.toml and .pi/pipowers.toml.
  */
 
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { parse as parseToml } from "smol-toml";
+import { log } from "./logging.js";
+
 export type Enforcement = "advisory" | "strict" | "custom";
 
 export type NonInteractiveMode = "advisory" | "block";
@@ -90,4 +96,148 @@ export function resolveMode(input: Partial<PipowersConfig>): PipowersConfig {
     }
     // Advisory: start from advisory defaults, overlay user tunables
     return deepMerge(ADVISORY_DEFAULTS, input as PipowersConfig);
+}
+
+let _testPaths: { home: string; cwd: string } | null = null;
+
+export function _resetForTest(paths: { home: string; cwd: string } | null): void {
+    _testPaths = paths;
+}
+
+function getHomeDir(): string {
+    if (_testPaths) return _testPaths.home;
+    return process.env.HOME || process.env.USERPROFILE || os.homedir();
+}
+
+function getCwd(): string {
+    if (_testPaths) return _testPaths.cwd;
+    return process.cwd();
+}
+
+export function globalConfigPath(): string {
+    return path.join(getHomeDir(), ".pi", "agent", "pipowers.toml");
+}
+
+export function projectConfigPath(): string {
+    return path.join(getCwd(), ".pi", "pipowers.toml");
+}
+
+export interface LoadResult {
+    config: PipowersConfig;
+    /** Which file currently drives the effective config, or null if neither exists. */
+    effectiveSource: "global" | "project" | null;
+    /** Per-leaf provenance. */
+    provenance: {
+        enforcement: "global" | "project" | "default";
+        tunables: {
+            planTracker: { required: "global" | "project" | "default"; protectedPaths: "global" | "project" | "default" };
+            workflow: {
+                processStrikeLimit: "global" | "project" | "default";
+                practiceStrikeLimit: "global" | "project" | "default";
+                allowOverride: "global" | "project" | "default";
+            };
+            nonInteractive: { mode: "global" | "project" | "default" };
+        };
+    };
+}
+
+export async function loadConfig(): Promise<LoadResult> {
+    const globalPath = globalConfigPath();
+    const projectPath = projectConfigPath();
+    const globalExists = fs.existsSync(globalPath);
+    const projectExists = fs.existsSync(projectPath);
+
+    if (!globalExists && !projectExists) {
+        return {
+            config: ADVISORY_DEFAULTS,
+            effectiveSource: null,
+            provenance: emptyProvenance("default"),
+        };
+    }
+
+    let globalParsed: Partial<PipowersConfig> = {};
+    let projectParsed: Partial<PipowersConfig> = {};
+
+    if (globalExists) {
+        try {
+            globalParsed = parseToml(fs.readFileSync(globalPath, "utf-8")) as Partial<PipowersConfig>;
+        } catch (err) {
+            log.error(
+                `Failed to parse ${globalPath}: ${err instanceof Error ? err.message : err}. Using defaults.`,
+            );
+        }
+    }
+
+    if (projectExists) {
+        try {
+            projectParsed = parseToml(fs.readFileSync(projectPath, "utf-8")) as Partial<PipowersConfig>;
+        } catch (err) {
+            log.error(
+                `Failed to parse ${projectPath}: ${err instanceof Error ? err.message : err}. Using defaults.`,
+            );
+        }
+    }
+
+    const merged = deepMerge(globalParsed, projectParsed) as Partial<PipowersConfig>;
+    const resolved = resolveMode(merged);
+
+    return {
+        config: resolved,
+        effectiveSource: projectExists ? "project" : globalExists ? "global" : null,
+        provenance: computeProvenance(globalParsed, projectParsed),
+    };
+}
+
+function emptyProvenance(source: "global" | "project" | "default"): LoadResult["provenance"] {
+    const tag = (): "global" | "project" | "default" => source;
+    return {
+        enforcement: tag(),
+        tunables: {
+            planTracker: { required: tag(), protectedPaths: tag() },
+            workflow: { processStrikeLimit: tag(), practiceStrikeLimit: tag(), allowOverride: tag() },
+            nonInteractive: { mode: tag() },
+        },
+    };
+}
+
+function computeProvenance(
+    global: Partial<PipowersConfig>,
+    project: Partial<PipowersConfig>,
+): LoadResult["provenance"] {
+    const sourceFor = (leafCheck: () => boolean): "global" | "project" | "default" => {
+        if (project && leafCheck.call(project)) return "project";
+        if (global && leafCheck.call(global)) return "global";
+        return "default";
+    };
+    return {
+        enforcement: sourceFor(function (this: any) {
+            return this.enforcement !== undefined;
+        }),
+        tunables: {
+            planTracker: {
+                required: sourceFor(function (this: any) {
+                    return this.tunables?.planTracker?.required !== undefined;
+                }),
+                protectedPaths: sourceFor(function (this: any) {
+                    return this.tunables?.planTracker?.protectedPaths !== undefined;
+                }),
+            },
+            workflow: {
+                processStrikeLimit: sourceFor(function (this: any) {
+                    return this.tunables?.workflow?.processStrikeLimit !== undefined;
+                }),
+                practiceStrikeLimit: sourceFor(function (this: any) {
+                    return this.tunables?.workflow?.practiceStrikeLimit !== undefined;
+                }),
+                allowOverride: sourceFor(function (this: any) {
+                    return this.tunables?.workflow?.allowOverride !== undefined;
+                }),
+            },
+            nonInteractive: {
+                mode: sourceFor(function (this: any) {
+                    return this.tunables?.nonInteractive?.mode !== undefined;
+                }),
+            },
+        },
+    };
 }
