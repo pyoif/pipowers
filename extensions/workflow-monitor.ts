@@ -17,6 +17,8 @@ import { Type } from "@sinclair/typebox";
 import { type ClassifierResult, classifyViolation } from "./enforcement-classifier.js";
 import { log } from "./logging.js";
 import { loadConfig, type PipowersConfig } from "./pipowers-config.js";
+import { buildStatusWidget } from "./pipowers-config-ui.js";
+import type { Task } from "./plan-tracker.js";
 import { getCurrentGitRef } from "./workflow-monitor/git";
 import { loadReference, REFERENCE_TOPICS } from "./workflow-monitor/reference-tool";
 import { getUnresolvedPhases, getUnresolvedPhasesBefore } from "./workflow-monitor/skip-confirmation";
@@ -216,9 +218,12 @@ export default function (pi: ExtensionAPI) {
   // Config is loaded async at extension init. Until it resolves, the
   // classifier is bypassed and the existing TDD/debug fall-through applies.
   let currentConfig: PipowersConfig | null = null;
+  let currentEffectiveSource: "global" | "project" | "default" = "default";
+  let planTrackerTasks: Task[] = [];
   (async () => {
-    const { config } = await loadConfig();
+    const { config, effectiveSource } = await loadConfig();
     currentConfig = config;
+    currentEffectiveSource = effectiveSource ?? "default";
   })();
 
   async function maybeEscalate(bucket: ViolationBucket, ctx: ExtensionContext): Promise<"allow" | "block"> {
@@ -315,6 +320,7 @@ export default function (pi: ExtensionAPI) {
       delete sessionAllowed.plan_tracker;
       branchNoticeShown = false;
       branchConfirmed = false;
+      planTrackerTasks = [];
       updateWidget(ctx);
     });
   }
@@ -654,8 +660,21 @@ export default function (pi: ExtensionAPI) {
     if (event.toolName === "plan_tracker") {
       changed = handler.handlePlanTrackerToolCall(input) || changed;
       // biome-ignore lint/suspicious/noExplicitAny: plan_tracker input.action
-      if ((input as any).action === "init") {
+      const planAction = (input as any).action;
+      if (planAction === "init") {
         handler.setPlanTrackerInitialized(true);
+        const initTasks = ((input as any).tasks as string[] | undefined) ?? [];
+        planTrackerTasks = initTasks.map((name) => ({ name, status: "pending" as Task["status"] }));
+        changed = true;
+      } else if (planAction === "update") {
+        const idx = (input as any).index as number | undefined;
+        const status = (input as any).status as Task["status"] | undefined;
+        if (typeof idx === "number" && status && idx >= 0 && idx < planTrackerTasks.length) {
+          planTrackerTasks[idx] = { ...planTrackerTasks[idx], status };
+          changed = true;
+        }
+      } else if (planAction === "clear") {
+        planTrackerTasks = [];
         changed = true;
       }
     }
@@ -847,6 +866,19 @@ export default function (pi: ExtensionAPI) {
   function updateWidget(ctx: ExtensionContext) {
     if (!ctx.hasUI) return;
 
+    // Register the pipowers status widget first so existing tests that
+    // capture the last setWidget call resolve to the workflow_monitor
+    // renderer below. The widget reads live from closure-scoped state via
+    // the getter functions.
+    ctx.ui.setWidget(
+      "pipowers_status",
+      buildStatusWidget(
+        () => currentConfig,
+        () => planTrackerTasks,
+        () => currentEffectiveSource,
+      ),
+    );
+
     const tddPhase = handler.getTddPhase().toUpperCase();
     const hasDebug = handler.isDebugActive();
     const workflow = handler.getWorkflowState();
@@ -896,6 +928,7 @@ export default function (pi: ExtensionAPI) {
     description: "Reset workflow tracker to fresh state for a new task",
     async handler(_args, ctx) {
       handler.resetState();
+      planTrackerTasks = [];
       persistState();
       updateWidget(ctx);
       if (ctx.hasUI) {
