@@ -47,6 +47,7 @@
     "vitest": "^4.0.18"
   },
   "dependencies": {
+    "minimatch": "^10.2.5",
     "smol-toml": "^1.7.0"
   }
 }

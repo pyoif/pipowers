@@ -13,7 +13,7 @@ import { type Static, Type } from "@sinclair/typebox";
 
 type TaskStatus = "pending" | "in_progress" | "complete";
 
-interface Task {
+export interface Task {
   name: string;
   status: TaskStatus;
 }

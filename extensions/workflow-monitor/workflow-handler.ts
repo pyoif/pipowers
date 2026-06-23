@@ -1,7 +1,10 @@
 import type { SessionEntry } from "@mariozechner/pi-coding-agent";
+import { minimatch } from "minimatch";
+import type { Task } from "../plan-tracker.js";
 import { DebugMonitor, type DebugViolation } from "./debug-monitor";
 import { isSourceFile } from "./heuristics";
 import { isInvestigationCommand, isInvestigationToolCall } from "./investigation";
+import { PlanTrackerMonitor } from "./plan-tracker-monitor";
 import { TddMonitor, type TddPhase, type TddViolation } from "./tdd-monitor";
 import { parseTestCommand, parseTestResult } from "./test-runner";
 import { VerificationMonitor, type VerificationViolation } from "./verification-monitor";
@@ -29,6 +32,10 @@ export interface SuperpowersStateSnapshot {
   verification: {
     verified: boolean;
     verificationWaived: boolean;
+  };
+  planTracker: {
+    initialized: boolean;
+    tasks: Task[];
   };
 }
 
@@ -61,6 +68,11 @@ export const VERIFICATION_DEFAULTS = {
   verificationWaived: false,
 };
 
+export const PLAN_TRACKER_DEFAULTS = {
+  initialized: false,
+  tasks: [] as Task[],
+};
+
 export interface WorkflowHandler {
   handleToolCall(toolName: string, input: Record<string, unknown>): ToolCallResult;
   handleReadOrInvestigation(toolName: string, path: string): void;
@@ -88,6 +100,9 @@ export interface WorkflowHandler {
   skipWorkflowPhases(phases: Phase[]): boolean;
   handleSkillFileRead(path: string): boolean;
   resetState(): void;
+  isPlanTrackerInitialized(): boolean;
+  setPlanTrackerInitialized(value: boolean): void;
+  isPathProtected(path: string, protectedPaths: string[]): boolean;
 }
 
 export function createWorkflowHandler(): WorkflowHandler {
@@ -95,6 +110,7 @@ export function createWorkflowHandler(): WorkflowHandler {
   const debug = new DebugMonitor();
   const verification = new VerificationMonitor();
   const tracker = new WorkflowTracker();
+  const planTracker = new PlanTrackerMonitor();
   let debugFailStreak = 0;
 
   return {
@@ -244,6 +260,7 @@ export function createWorkflowHandler(): WorkflowHandler {
         tdd: tdd.getState(),
         debug: debug.getState(),
         verification: verification.getState(),
+        planTracker: planTracker.getState(),
       };
     },
 
@@ -267,6 +284,9 @@ export function createWorkflowHandler(): WorkflowHandler {
       }
       if (snapshot.verification) {
         verification.setState({ ...VERIFICATION_DEFAULTS, ...snapshot.verification });
+      }
+      if (snapshot.planTracker) {
+        planTracker.setState({ ...PLAN_TRACKER_DEFAULTS, ...snapshot.planTracker });
       }
       debugFailStreak = 0;
     },
@@ -304,6 +324,7 @@ export function createWorkflowHandler(): WorkflowHandler {
         tdd: { ...TDD_DEFAULTS, testFiles: [], sourceFiles: [] },
         debug: { ...DEBUG_DEFAULTS },
         verification: { ...VERIFICATION_DEFAULTS },
+        planTracker: { ...PLAN_TRACKER_DEFAULTS },
       };
 
       tracker.setState(freshState.workflow);
@@ -315,7 +336,24 @@ export function createWorkflowHandler(): WorkflowHandler {
       );
       debug.setState(freshState.debug);
       verification.setState(freshState.verification);
+      planTracker.setState(freshState.planTracker);
       debugFailStreak = 0;
     },
+
+    isPlanTrackerInitialized() {
+      return planTracker.isInitialized();
+    },
+
+    setPlanTrackerInitialized(value) {
+      planTracker.setInitialized(value);
+    },
+
+    isPathProtected(path, protectedPaths) {
+      return matchesAnyGlob(path, protectedPaths) || isSourceFile(path);
+    },
   };
+}
+
+function matchesAnyGlob(pathStr: string, globs: string[]): boolean {
+  return globs.some((g) => minimatch(pathStr, g, { dot: true }));
 }

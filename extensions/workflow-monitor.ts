@@ -54,8 +54,16 @@ async function selectValue<T extends string>(
 
 const SUPERPOWERS_STATE_ENTRY_TYPE = "superpowers_state";
 
-export function getStateFilePath(): string {
+function getOldStateFilePath(): string {
   return path.join(process.cwd(), ".pi", "superpowers-state.json");
+}
+
+function getNewStateFilePath(): string {
+  return path.join(process.cwd(), ".pi", "pipowers-state.json");
+}
+
+export function getStateFilePath(): string {
+  return getNewStateFilePath();
 }
 
 export function reconstructState(ctx: ExtensionContext, handler: WorkflowHandler, stateFilePath?: string | false) {
@@ -64,18 +72,22 @@ export function reconstructState(ctx: ExtensionContext, handler: WorkflowHandler
   // Try file-based state first (survives across sessions)
   // Pass false to disable file-based state (for testing)
   if (stateFilePath !== false) {
-    try {
-      const statePath = stateFilePath ?? getStateFilePath();
-      if (fs.existsSync(statePath)) {
-        const raw = fs.readFileSync(statePath, "utf-8");
+    const newPath = getNewStateFilePath();
+    const oldPath = getOldStateFilePath();
+    const candidates = stateFilePath ? [stateFilePath] : [newPath, oldPath];
+    for (const candidate of candidates) {
+      if (!fs.existsSync(candidate)) continue;
+      try {
+        const raw = fs.readFileSync(candidate, "utf-8");
         const data = JSON.parse(raw);
         handler.setFullState(data);
+        if (candidate === oldPath) {
+          log.info(`Loaded state from legacy ${oldPath}. New writes will go to ${newPath}.`);
+        }
         return;
+      } catch (err) {
+        log.warn(`Failed to read ${candidate}: ${err instanceof Error ? err.message : err}`);
       }
-    } catch (err) {
-      log.warn(
-        `Failed to read state file, falling back to session entries: ${err instanceof Error ? err.message : err}`,
-      );
     }
   }
 
@@ -151,7 +163,8 @@ export default function (pi: ExtensionAPI) {
     try {
       const statePath = getStateFilePath();
       fs.mkdirSync(path.dirname(statePath), { recursive: true });
-      fs.writeFileSync(statePath, JSON.stringify(handler.getFullState(), null, 2));
+      const fullState = { version: 2, ...handler.getFullState() };
+      fs.writeFileSync(statePath, JSON.stringify(fullState, null, 2));
     } catch (err) {
       log.warn(`Failed to persist state file: ${err instanceof Error ? err.message : err}`);
     }

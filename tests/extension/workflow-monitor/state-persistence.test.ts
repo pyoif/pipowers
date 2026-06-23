@@ -7,6 +7,7 @@ import { DebugMonitor } from "../../../extensions/workflow-monitor/debug-monitor
 import {
   createWorkflowHandler,
   DEBUG_DEFAULTS,
+  PLAN_TRACKER_DEFAULTS,
   TDD_DEFAULTS,
   VERIFICATION_DEFAULTS,
   type SuperpowersStateSnapshot,
@@ -76,6 +77,15 @@ describe("VerificationMonitor state persistence", () => {
 });
 
 describe("WorkflowHandler aggregated state persistence", () => {
+  test("planTracker.initialized round-trips through setFullState / getFullState", () => {
+    const handler = createWorkflowHandler();
+    expect(handler.isPlanTrackerInitialized()).toBe(false);
+    handler.setPlanTrackerInitialized(true);
+    const snapshot = handler.getFullState();
+    expect(snapshot.planTracker.initialized).toBe(true);
+    expect(handler.isPlanTrackerInitialized()).toBe(true);
+  });
+
   test("getFullState aggregates workflow, tdd, debug, and verification state", () => {
     const handler = createWorkflowHandler();
 
@@ -105,6 +115,10 @@ describe("WorkflowHandler aggregated state persistence", () => {
       verification: {
         verified: false,
         verificationWaived: true,
+      },
+      planTracker: {
+        initialized: false,
+        tasks: [],
       },
     });
   });
@@ -153,6 +167,10 @@ describe("WorkflowHandler aggregated state persistence", () => {
       verification: {
         verified: false,
         verificationWaived: true,
+      },
+      planTracker: {
+        initialized: false,
+        tasks: [],
       },
     };
 
@@ -248,6 +266,7 @@ describe("WorkflowHandler aggregated state persistence", () => {
       },
       debug: { active: true, investigated: true, fixAttempts: 3 },
       verification: { verified: true, verificationWaived: true },
+      planTracker: { initialized: false, tasks: [] },
     });
 
     handler.resetState();
@@ -269,16 +288,17 @@ describe("WorkflowHandler aggregated state persistence", () => {
         verified: false,
         verificationWaived: false,
       },
+      planTracker: { ...PLAN_TRACKER_DEFAULTS },
     });
   });
 });
 
 describe("file-based state persistence", () => {
-  test("getStateFilePath returns .pi/superpowers-state.json in cwd", () => {
+  test("getStateFilePath returns .pi/pipowers-state.json in cwd", () => {
     withTempCwd();
 
     const result = getStateFilePath();
-    expect(result).toMatch(/\.pi\/superpowers-state\.json$/);
+    expect(result).toMatch(/[\\/]pipowers-state\.json$/);
   });
 
   test("reconstructState reads from file when it exists", () => {
@@ -320,10 +340,11 @@ describe("file-based state persistence", () => {
       },
       debug: { active: true, investigated: true, fixAttempts: 2 },
       verification: { verified: true, verificationWaived: false },
+      planTracker: { initialized: false, tasks: [] },
     };
 
     fs.mkdirSync(path.join(tempDir, ".pi"), { recursive: true });
-    fs.writeFileSync(path.join(tempDir, ".pi", "superpowers-state.json"), JSON.stringify(snapshot, null, 2));
+    fs.writeFileSync(path.join(tempDir, ".pi", "pipowers-state.json"), JSON.stringify(snapshot, null, 2));
 
     reconstructState(
       {
@@ -342,7 +363,7 @@ describe("file-based state persistence", () => {
     const handler = createWorkflowHandler();
 
     fs.mkdirSync(path.join(tempDir, ".pi"), { recursive: true });
-    fs.writeFileSync(path.join(tempDir, ".pi", "superpowers-state.json"), "not valid json{{{");
+    fs.writeFileSync(path.join(tempDir, ".pi", "pipowers-state.json"), "not valid json{{{");
 
     const warnSpy = vi.spyOn(logging.log, "warn");
 
@@ -355,7 +376,7 @@ describe("file-based state persistence", () => {
       handler,
     );
 
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Failed to read state file"));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Failed to read"));
     warnSpy.mockRestore();
   });
 
@@ -399,6 +420,7 @@ describe("file-based state persistence", () => {
       },
       debug: { active: true, investigated: true, fixAttempts: 1 },
       verification: { verified: false, verificationWaived: true },
+      planTracker: { initialized: false, tasks: [] },
     };
 
     reconstructState(
@@ -453,6 +475,7 @@ describe("workflow-monitor state reconstruction + persistence wiring", () => {
       },
       debug: { active: true, investigated: true, fixAttempts: 2 },
       verification: { verified: false, verificationWaived: true },
+      planTracker: { initialized: false, tasks: [] },
     };
 
     reconstructState(
@@ -491,6 +514,7 @@ describe("workflow-monitor state reconstruction + persistence wiring", () => {
       tdd: { ...TDD_DEFAULTS, testFiles: [], sourceFiles: [] },
       debug: { ...DEBUG_DEFAULTS },
       verification: { ...VERIFICATION_DEFAULTS },
+      planTracker: { ...PLAN_TRACKER_DEFAULTS },
     });
   });
 
@@ -515,6 +539,7 @@ describe("workflow-monitor state reconstruction + persistence wiring", () => {
       tdd: { ...TDD_DEFAULTS, testFiles: [], sourceFiles: [] },
       debug: { ...DEBUG_DEFAULTS },
       verification: { ...VERIFICATION_DEFAULTS },
+      planTracker: { ...PLAN_TRACKER_DEFAULTS },
     });
   });
 
@@ -538,6 +563,7 @@ describe("workflow-monitor state reconstruction + persistence wiring", () => {
       tdd: { phase: "red", testFiles: ["tests/old.test.ts"], sourceFiles: [], redVerificationPending: false },
       debug: { active: false, investigated: false, fixAttempts: 0 },
       verification: { verified: false, verificationWaived: false },
+      planTracker: { initialized: false, tasks: [] },
     };
 
     const newer: SuperpowersStateSnapshot = {
@@ -569,6 +595,7 @@ describe("workflow-monitor state reconstruction + persistence wiring", () => {
       },
       debug: { active: true, investigated: true, fixAttempts: 1 },
       verification: { verified: true, verificationWaived: false },
+      planTracker: { initialized: false, tasks: [] },
     };
 
     reconstructState(
@@ -610,7 +637,7 @@ describe("workflow-monitor state reconstruction + persistence wiring", () => {
     expect(fake.appendedEntries[0]?.customType).toBe("superpowers_state");
     expect(fake.appendedEntries[0]?.data.workflow.currentPhase).toBe("plan");
 
-    const statePath = path.join(tempDir, ".pi", "superpowers-state.json");
+    const statePath = path.join(tempDir, ".pi", "pipowers-state.json");
     expect(fs.existsSync(statePath)).toBe(true);
 
     const persisted = JSON.parse(fs.readFileSync(statePath, "utf-8"));
