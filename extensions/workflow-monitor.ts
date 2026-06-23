@@ -14,7 +14,9 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
+import { type ClassifierResult, classifyViolation } from "./enforcement-classifier.js";
 import { log } from "./logging.js";
+import { loadConfig, type PipowersConfig } from "./pipowers-config.js";
 import { getCurrentGitRef } from "./workflow-monitor/git";
 import { loadReference, REFERENCE_TOPICS } from "./workflow-monitor/reference-tool";
 import { getUnresolvedPhases, getUnresolvedPhasesBefore } from "./workflow-monitor/skip-confirmation";
@@ -50,6 +52,88 @@ async function selectValue<T extends string>(
   const pickedLabel = await ctx.ui.select(title, labels);
   const picked = options.find((o) => o.label === pickedLabel);
   return (picked?.value ?? "cancel") as T;
+}
+
+function getWarningFor(v: ClassifierResult): string {
+  if (v.subCategory === "phase-boundary") {
+    return `⚠️  Phase violation: writing to \`${v.attemptedPath}\` during \`${v.detail.currentPhase}\` phase. Allowed: docs/plans/.`;
+  }
+  if (v.subCategory === "tdd-new-feature") {
+    return `⚠️  TDD: writing to \`${v.attemptedPath}\` without a failing test (TDD phase: ${v.detail.tddPhase}).`;
+  }
+  if (v.bucket === "plan_tracker") {
+    return `⚠️  No plan active. Initialize plan_tracker before writing to \`${v.attemptedPath}\`.`;
+  }
+  return `⚠️  Workflow violation on \`${v.attemptedPath}\`.`;
+}
+
+function getPromptOptions(
+  v: ClassifierResult,
+  config: PipowersConfig,
+): { title: string; choices: { label: string; value: string }[] } {
+  if (v.subCategory === "phase-boundary") {
+    return {
+      title: `Agent attempted write to \`${v.attemptedPath}\` during \`${v.detail.currentPhase}\` phase.`,
+      choices: [
+        { label: "Advance to next phase (recommended)", value: "advance" },
+        ...(config.tunables.workflow.allowOverride
+          ? [{ label: "Override (let it through this once)", value: "override" }]
+          : []),
+        { label: "Stop", value: "stop" },
+      ],
+    };
+  }
+  if (v.subCategory === "tdd-new-feature") {
+    return {
+      title: `Agent attempted write to \`${v.attemptedPath}\` without a failing test.`,
+      choices: [
+        { label: "Run the test first (recommended)", value: "run-test" },
+        ...(config.tunables.workflow.allowOverride
+          ? [{ label: "Override (let it through this once)", value: "override" }]
+          : []),
+        { label: "Stop", value: "stop" },
+      ],
+    };
+  }
+  if (v.bucket === "plan_tracker") {
+    return {
+      title: `Agent attempted write to \`${v.attemptedPath}\` but no plan is active.`,
+      choices: [
+        { label: "Initialize plan (recommended)", value: "init-plan" },
+        ...(config.tunables.workflow.allowOverride
+          ? [{ label: "Override (let it through this once)", value: "override" }]
+          : []),
+        { label: "Stop", value: "stop" },
+      ],
+    };
+  }
+  return { title: "Workflow violation", choices: [{ label: "Stop", value: "stop" }] };
+}
+
+async function performRecovery(
+  action: string,
+  _v: ClassifierResult,
+  // biome-ignore lint/suspicious/noExplicitAny: pi SDK context type
+  ctx: any,
+  handler: WorkflowHandler,
+): Promise<void> {
+  if (action === "advance") {
+    const phase = handler.getWorkflowState()?.currentPhase;
+    if (phase) {
+      const next = {
+        brainstorm: "plan",
+        plan: "execute",
+        execute: "verify",
+        verify: "review",
+        review: "finish",
+      }[phase];
+      if (next) handler.advanceWorkflowTo(next as Phase);
+    }
+  }
+  // "init-plan" and "run-test" don't need server-side recovery: the agent
+  // re-emits the appropriate tool call as part of its next turn. We just
+  // log that the user picked this option.
+  ctx.ui.notify?.(`Recovery: ${action}. Agent will proceed.`);
 }
 
 const SUPERPOWERS_STATE_ENTRY_TYPE = "superpowers_state";
@@ -125,9 +209,17 @@ export default function (pi: ExtensionAPI) {
   const pendingBranchGates = new Map<string, string>();
   const pendingProcessWarnings = new Map<string, string>();
 
-  type ViolationBucket = "process" | "practice";
-  const strikes: Record<ViolationBucket, number> = { process: 0, practice: 0 };
+  type ViolationBucket = "process" | "plan_tracker" | "practice";
+  const strikes: Record<ViolationBucket, number> = { process: 0, plan_tracker: 0, practice: 0 };
   const sessionAllowed: Partial<Record<ViolationBucket, boolean>> = {};
+
+  // Config is loaded async at extension init. Until it resolves, the
+  // classifier is bypassed and the existing TDD/debug fall-through applies.
+  let currentConfig: PipowersConfig | null = null;
+  (async () => {
+    const { config } = await loadConfig();
+    currentConfig = config;
+  })();
 
   async function maybeEscalate(bucket: ViolationBucket, ctx: ExtensionContext): Promise<"allow" | "block"> {
     if (!ctx.hasUI) return "allow";
@@ -217,8 +309,10 @@ export default function (pi: ExtensionAPI) {
       pendingProcessWarnings.clear();
       strikes.process = 0;
       strikes.practice = 0;
+      strikes.plan_tracker = 0;
       delete sessionAllowed.process;
       delete sessionAllowed.practice;
+      delete sessionAllowed.plan_tracker;
       branchNoticeShown = false;
       branchConfirmed = false;
       updateWidget(ctx);
@@ -434,6 +528,38 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     const toolCallId = event.toolCallId;
 
+    // Classifier check (strict mode). Runs first; if the classifier says we
+    // should hard-block, we handle it here and bail. In advisory mode the
+    // classifier defers to the existing TDD/debug/branch logic below.
+    if (currentConfig) {
+      const violation = classifyViolation({
+        toolName: event.toolName,
+        input: event.input as Record<string, unknown>,
+        config: currentConfig,
+        workflowPhase: handler.getWorkflowState()?.currentPhase ?? null,
+        isPlanTrackerInitialized: handler.isPlanTrackerInitialized(),
+        tddPhase: handler.getTddPhase(),
+      });
+      if (violation?.shouldBlock) {
+        strikes[violation.bucket] = (strikes[violation.bucket] ?? 0) + 1;
+        if (!ctx.hasUI || currentConfig.tunables.nonInteractive.mode === "advisory") {
+          return { warning: getWarningFor(violation) };
+        }
+        const promptOptions = getPromptOptions(violation, currentConfig);
+        const picked = await selectValue(ctx, promptOptions.title, promptOptions.choices);
+        if (picked === "stop") {
+          return { blocked: true, reason: violation.reason, attemptedPath: violation.attemptedPath };
+        }
+        if (picked === "override") {
+          strikes[violation.bucket] = 0;
+          return;
+        }
+        // "advance" or "init-plan" or "run-test": perform the recovery and allow
+        await performRecovery(picked, violation, ctx, handler);
+        return;
+      }
+    }
+
     if (event.toolName === "bash") {
       // biome-ignore lint/suspicious/noExplicitAny: pi SDK event input type
       const command = ((event.input as Record<string, any>).command as string | undefined) ?? "";
@@ -527,6 +653,11 @@ export default function (pi: ExtensionAPI) {
 
     if (event.toolName === "plan_tracker") {
       changed = handler.handlePlanTrackerToolCall(input) || changed;
+      // biome-ignore lint/suspicious/noExplicitAny: plan_tracker input.action
+      if ((input as any).action === "init") {
+        handler.setPlanTrackerInitialized(true);
+        changed = true;
+      }
     }
 
     if (changed) {
