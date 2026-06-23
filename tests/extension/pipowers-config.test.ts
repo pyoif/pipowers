@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { deepMerge, resolveMode, ADVISORY_DEFAULTS, STRICT_DEFAULTS, loadConfig, _resetForTest, saveConfig } from "../../extensions/pipowers-config.js";
+import { deepMerge, resolveMode, ADVISORY_DEFAULTS, STRICT_DEFAULTS, loadConfig, _resetForTest, saveConfig, detectLegacyConfig } from "../../extensions/pipowers-config.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -168,6 +168,29 @@ describe("saveConfig", () => {
             const { config } = await loadConfig();
             expect(config.enforcement).toBe("strict");
             expect(config.tunables.planTracker.required).toBe(true);
+        });
+    });
+});
+
+describe("detectLegacyConfig", () => {
+    test("detects legacy pi-superpowers-plus key in shared config files (logs once)", async () => {
+        await withTempHome(async (home) => {
+            // Simulate the user's old config: pi's shared global config with the legacy key
+            const sharedConfig = path.join(home, ".pi", "agent", "config.json");
+            fs.mkdirSync(path.dirname(sharedConfig), { recursive: true });
+            fs.writeFileSync(sharedConfig, JSON.stringify({ "pi-superpowers-plus": { enforcement: "advisory" } }));
+            const detected = await detectLegacyConfig();
+            expect(detected).toBe(true);
+        });
+    });
+
+    test("returns false when no legacy key is present", async () => {
+        await withTempHome(async (home) => {
+            const sharedConfig = path.join(home, ".pi", "agent", "config.json");
+            fs.mkdirSync(path.dirname(sharedConfig), { recursive: true });
+            fs.writeFileSync(sharedConfig, JSON.stringify({ unrelated: "value" }));
+            const detected = await detectLegacyConfig();
+            expect(detected).toBe(false);
         });
     });
 });

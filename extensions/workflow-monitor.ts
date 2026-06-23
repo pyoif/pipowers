@@ -16,7 +16,7 @@ import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { type ClassifierResult, classifyViolation } from "./enforcement-classifier.js";
 import { log } from "./logging.js";
-import { loadConfig, type PipowersConfig, projectConfigPath } from "./pipowers-config.js";
+import { loadConfig, type PipowersConfig, projectConfigPath, detectLegacyConfig } from "./pipowers-config.js";
 import { buildStatusWidget, createConfigWatcher, registerConfigCommand } from "./pipowers-config-ui.js";
 import type { Task } from "./plan-tracker.js";
 import { getCurrentGitRef } from "./workflow-monitor/git";
@@ -224,6 +224,7 @@ export default function (pi: ExtensionAPI) {
     const { config, effectiveSource } = await loadConfig();
     currentConfig = config;
     currentEffectiveSource = effectiveSource ?? "default";
+    await detectLegacyConfig();
   })();
 
   // Watch the project config file so hand-edits refresh the widget in real-time.

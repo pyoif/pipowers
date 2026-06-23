@@ -267,3 +267,27 @@ function computeProvenance(
         },
     };
 }
+
+export async function detectLegacyConfig(): Promise<boolean> {
+    const candidates = [
+        path.join(getHomeDir(), ".pi", "agent", "config.json"),
+        path.join(getCwd(), ".pi", "settings.json"),
+    ];
+    let found = false;
+    for (const file of candidates) {
+        if (!fs.existsSync(file)) continue;
+        try {
+            const data = JSON.parse(fs.readFileSync(file, "utf-8"));
+            if (data && typeof data === "object" && "pi-superpowers-plus" in data) {
+                log.warn(
+                    `Detected legacy \`pi-superpowers-plus\` config key in ${file}. ` +
+                    `pipowers uses its own TOML config files. Run /pipwr_config to set up the new config.`,
+                );
+                found = true;
+            }
+        } catch {
+            // ignore parse errors here; loadConfig handles them
+        }
+    }
+    return found;
+}
