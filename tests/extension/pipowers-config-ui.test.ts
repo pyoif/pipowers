@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { formatStatusWidget } from "../../extensions/pipowers-config-ui.js";
+import { formatStatusWidget, pickMode } from "../../extensions/pipowers-config-ui.js";
 import { STRICT_DEFAULTS, ADVISORY_DEFAULTS } from "../../extensions/pipowers-config.js";
 
 describe("formatStatusWidget", () => {
@@ -25,4 +25,22 @@ describe("formatStatusWidget", () => {
     expect(out).toContain("✓");
     expect(out).toContain("○");
   });
+});
+
+describe("pickMode", () => {
+    test("returns the chosen mode", async () => {
+        const chosen = await pickMode({
+            hasUI: true,
+            ui: { select: async () => "Strict" },
+        } as any, "advisory");
+        expect(chosen).toBe("strict");
+    });
+
+    test("returns current mode on cancel", async () => {
+        const chosen = await pickMode({
+            hasUI: true,
+            ui: { select: async () => "Cancel" },
+        } as any, "strict");
+        expect(chosen).toBe("strict");
+    });
 });

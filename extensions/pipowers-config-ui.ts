@@ -4,8 +4,7 @@
 
 import type { ExtensionAPI, ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
-import type { ConfigLayer, PipowersConfig } from "./pipowers-config.js";
-import { loadConfig, saveConfig } from "./pipowers-config.js";
+import { ADVISORY_DEFAULTS, type ConfigLayer, loadConfig, type PipowersConfig, saveConfig } from "./pipowers-config.js";
 
 interface TaskLike {
   name: string;
@@ -40,4 +39,56 @@ export function buildStatusWidget(
     const color = config.enforcement === "advisory" ? "dim" : config.enforcement === "strict" ? "warning" : "success";
     return new Text(theme.fg(color as any, text), 0, 0);
   };
+}
+
+export async function pickMode(
+    ctx: ExtensionContext,
+    current: "advisory" | "strict" | "custom",
+): Promise<"advisory" | "strict" | "custom"> {
+    const labels = ["Advisory", "Strict", "Custom", "Cancel"];
+    const picked = await ctx.ui.select(`Choose enforcement mode (current: ${current})`, labels);
+    switch (picked) {
+        case "Advisory": return "advisory";
+        case "Strict": return "strict";
+        case "Custom": return "custom";
+        default: return current;
+    }
+}
+
+async function pickLayer(ctx: ExtensionContext, defaultLayer: ConfigLayer): Promise<ConfigLayer> {
+    const picked = await ctx.ui.select(
+        "Save to which layer?",
+        ["Project (.pi/pipowers.toml)", "Global (~/.pi/agent/pipowers.toml)"],
+    );
+    return picked.startsWith("Project") ? "project" : "global";
+}
+
+// Placeholder for Task 10. Returns the current tunables so the file compiles
+// and the tests pass; Task 10 will replace this with a real editor.
+async function pickTunables(_ctx: ExtensionContext, current: PipowersConfig | null): Promise<PipowersConfig["tunables"]> {
+    return current?.tunables ?? ADVISORY_DEFAULTS.tunables;
+}
+
+export function registerConfigCommand(
+    pi: ExtensionAPI,
+    getConfig: () => PipowersConfig | null,
+    refreshConfig: () => Promise<void>,
+): void {
+    pi.registerCommand("pipwr_config", async (args, ctx) => {
+        const current = getConfig()?.enforcement ?? "advisory";
+        const layer: ConfigLayer = await pickLayer(ctx, "project");
+        const newMode = await pickMode(ctx, current);
+        if (newMode === current && layer === "project") {
+            ctx.ui.notify?.("No change.");
+            return;
+        }
+        if (newMode === "custom") {
+            const tunables = await pickTunables(ctx, getConfig());
+            await saveConfig(layer, { enforcement: "custom", tunables });
+        } else {
+            await saveConfig(layer, { enforcement: newMode });
+        }
+        await refreshConfig();
+        ctx.ui.notify?.(`Config saved (${layer}).`);
+    });
 }

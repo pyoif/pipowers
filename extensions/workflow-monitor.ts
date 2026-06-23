@@ -17,7 +17,7 @@ import { Type } from "@sinclair/typebox";
 import { type ClassifierResult, classifyViolation } from "./enforcement-classifier.js";
 import { log } from "./logging.js";
 import { loadConfig, type PipowersConfig } from "./pipowers-config.js";
-import { buildStatusWidget } from "./pipowers-config-ui.js";
+import { buildStatusWidget, registerConfigCommand } from "./pipowers-config-ui.js";
 import type { Task } from "./plan-tracker.js";
 import { getCurrentGitRef } from "./workflow-monitor/git";
 import { loadReference, REFERENCE_TOPICS } from "./workflow-monitor/reference-tool";
@@ -923,6 +923,12 @@ export default function (pi: ExtensionAPI) {
       return parts.length > 0 ? new Text(parts.join(theme.fg("dim", "  |  ")), 0, 0) : undefined;
     });
   }
+
+  registerConfigCommand(pi, () => currentConfig, async () => {
+    const result = await loadConfig();
+    currentConfig = result.config;
+    currentEffectiveSource = result.effectiveSource;
+  });
 
   pi.registerCommand("workflow-reset", {
     description: "Reset workflow tracker to fresh state for a new task",
