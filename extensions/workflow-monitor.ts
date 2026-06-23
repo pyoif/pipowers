@@ -16,8 +16,8 @@ import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { type ClassifierResult, classifyViolation } from "./enforcement-classifier.js";
 import { log } from "./logging.js";
-import { loadConfig, type PipowersConfig } from "./pipowers-config.js";
-import { buildStatusWidget, registerConfigCommand } from "./pipowers-config-ui.js";
+import { loadConfig, type PipowersConfig, projectConfigPath } from "./pipowers-config.js";
+import { buildStatusWidget, createConfigWatcher, registerConfigCommand } from "./pipowers-config-ui.js";
 import type { Task } from "./plan-tracker.js";
 import { getCurrentGitRef } from "./workflow-monitor/git";
 import { loadReference, REFERENCE_TOPICS } from "./workflow-monitor/reference-tool";
@@ -225,6 +225,22 @@ export default function (pi: ExtensionAPI) {
     currentConfig = config;
     currentEffectiveSource = effectiveSource ?? "default";
   })();
+
+  // Watch the project config file so hand-edits refresh the widget in real-time.
+  const projectConfig = projectConfigPath();
+  if (fs.existsSync(path.dirname(projectConfig))) {
+    const watcher = createConfigWatcher({
+      projectPath: projectConfig,
+      onChange: async () => {
+        const { config, effectiveSource } = await loadConfig();
+        currentConfig = config;
+        currentEffectiveSource = effectiveSource;
+      },
+      debounceMs: 250,
+    });
+    watcher.start();
+    // Stash the watcher so it isn't GC'd. On session teardown, call watcher.stop().
+  }
 
   async function maybeEscalate(bucket: ViolationBucket, ctx: ExtensionContext): Promise<"allow" | "block"> {
     if (!ctx.hasUI) return "allow";

@@ -2,6 +2,8 @@
  * Pipowers UI: TUI status widget and /pipwr_config slash command.
  */
 
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { ADVISORY_DEFAULTS, type ConfigLayer, loadConfig, type PipowersConfig, saveConfig } from "./pipowers-config.js";
@@ -129,4 +131,36 @@ export function registerConfigCommand(
         await refreshConfig();
         ctx.ui.notify?.(`Config saved (${layer}).`);
     });
+}
+
+export interface ConfigWatcher {
+    start(): void;
+    stop(): void;
+}
+
+export function createConfigWatcher(opts: {
+    projectPath: string;
+    onChange: () => void | Promise<void>;
+    debounceMs?: number;
+}): ConfigWatcher {
+    const debounce = opts.debounceMs ?? 250;
+    let timer: NodeJS.Timeout | null = null;
+    let fsWatcher: fs.FSWatcher | null = null;
+
+    return {
+        start() {
+            if (!fs.existsSync(path.dirname(opts.projectPath))) return;
+            fsWatcher = fs.watch(path.dirname(opts.projectPath), (_event, filename) => {
+                if (filename !== path.basename(opts.projectPath)) return;
+                if (timer) clearTimeout(timer);
+                timer = setTimeout(() => {
+                    opts.onChange();
+                }, debounce);
+            });
+        },
+        stop() {
+            if (timer) clearTimeout(timer);
+            if (fsWatcher) fsWatcher.close();
+        },
+    };
 }

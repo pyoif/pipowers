@@ -1,5 +1,8 @@
 import { describe, expect, test } from "vitest";
-import { formatStatusWidget, pickMode, pickTunables } from "../../extensions/pipowers-config-ui.js";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
+import { createConfigWatcher, formatStatusWidget, pickMode, pickTunables } from "../../extensions/pipowers-config-ui.js";
 import { STRICT_DEFAULTS, ADVISORY_DEFAULTS } from "../../extensions/pipowers-config.js";
 
 describe("formatStatusWidget", () => {
@@ -74,4 +77,29 @@ describe("pickTunables", () => {
         } as any, STRICT_DEFAULTS);
         expect(result.planTracker.required).toBe(false);
     });
+});
+
+test("createConfigWatcher invokes onChange after a debounced file change", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "pipwr-watch-"));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "pipwr-watch-"));
+    fs.mkdirSync(path.join(project, ".pi"), { recursive: true });
+    const configFile = path.join(project, ".pi", "pipowers.toml");
+    fs.writeFileSync(configFile, 'enforcement = "advisory"\n');
+
+    let calls = 0;
+    const watcher = createConfigWatcher({
+        projectPath: configFile,
+        onChange: () => { calls += 1; },
+        debounceMs: 30,
+    });
+    watcher.start();
+
+    await new Promise((r) => setTimeout(r, 100));
+    fs.writeFileSync(configFile, 'enforcement = "strict"\n');
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(calls).toBeGreaterThanOrEqual(1);
+    watcher.stop();
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(project, { recursive: true, force: true });
 });
