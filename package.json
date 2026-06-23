@@ -1,9 +1,11 @@
 {
-  "name": "pi-superpowers-plus",
-  "version": "0.4.1",
-  "description": "Superpowers workflow skills adapted for pi",
+  "name": "pipowers",
+  "version": "0.5.0",
+  "description": "Workflow skills and runtime enforcement for pi",
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "workflow",
+    "enforcement"
   ],
   "scripts": {
     "test": "vitest run",
