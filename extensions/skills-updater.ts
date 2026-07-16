@@ -28,8 +28,9 @@ export function shouldCheck(skillsDir: string, lastCheck: string): boolean {
   } catch {
     return true;
   }
-  const elapsed = Date.now() - new Date(lastCheck).getTime();
-  return elapsed >= 24 * 60 * 60 * 1000;
+  const today = new Date().toISOString().slice(0, 10);
+  const lastDay = new Date(lastCheck).toISOString().slice(0, 10);
+  return today !== lastDay;
 }
 
 export function parseTar(buffer: Buffer, prefix: string): TarEntry[] {

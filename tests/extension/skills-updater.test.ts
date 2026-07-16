@@ -37,13 +37,13 @@ describe("shouldCheck", () => {
     fs.writeFileSync(path.join(d, "foo.txt"), "hello");
     expect(shouldCheck(d, "2026-01-01T00:00:00.000Z")).toBe(true);
   });
-  test("returns false when skills dir has .md and lastCheck is recent", () => {
+  test("returns false when skills dir has .md and lastCheck is today", () => {
     const d = path.join(tmpDir, "skills");
     fs.mkdirSync(d);
     fs.writeFileSync(path.join(d, "test.md"), "# Test");
     expect(shouldCheck(d, new Date().toISOString())).toBe(false);
   });
-  test("returns true when skills dir has .md but lastCheck > 24h ago", () => {
+  test("returns true when skills dir has .md but lastCheck is different day", () => {
     const d = path.join(tmpDir, "skills");
     fs.mkdirSync(d);
     fs.writeFileSync(path.join(d, "test.md"), "# Test");
