@@ -197,8 +197,7 @@ describe("checkAndUpdate", () => {
   test("fetches immediately when skills dir missing (new install)", async () => {
     const compressed = fs.readFileSync("tests/fixtures/skills-test.tar.gz");
     const refsText =
-      "001e# service=git-upload-pack\n0000" +
-      "003fabc1234567890abcdef1234567890abcdef4321 refs/heads/main\n0000";
+      "001e# service=git-upload-pack\n0000" + "003fabc1234567890abcdef1234567890abcdef4321 refs/heads/main\n0000";
     global.fetch = vi
       .fn()
       .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(refsText) })
@@ -244,12 +243,14 @@ describe("checkAndUpdate", () => {
     fs.mkdirSync(piDir, { recursive: true });
     fs.writeFileSync(
       path.join(piDir, "pipowers-skills-sha.json"),
-      JSON.stringify({ sha: "oldsha1234567890abcdef1234567890abcdef12", lastCheck: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString() }),
+      JSON.stringify({
+        sha: "oldsha1234567890abcdef1234567890abcdef12",
+        lastCheck: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+      }),
     );
 
     const refsText =
-      "001e# service=git-upload-pack\n0000\n" +
-      "0044oldsha1234567890abcdef1234567890abcdef12 refs/heads/main\n0000";
+      "001e# service=git-upload-pack\n0000\n" + "0044oldsha1234567890abcdef1234567890abcdef12 refs/heads/main\n0000";
     global.fetch = vi.fn().mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(refsText) });
     const l = mockLog();
     await checkAndUpdate(l, tmpRoot);
@@ -264,13 +265,15 @@ describe("checkAndUpdate", () => {
     fs.mkdirSync(piDir, { recursive: true });
     fs.writeFileSync(
       path.join(piDir, "pipowers-skills-sha.json"),
-      JSON.stringify({ sha: "oldsha00000000000000000000000000000000000000", lastCheck: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString() }),
+      JSON.stringify({
+        sha: "oldsha00000000000000000000000000000000000000",
+        lastCheck: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+      }),
     );
 
     const compressed = fs.readFileSync("tests/fixtures/skills-test.tar.gz");
     const refsText =
-      "001e# service=git-upload-pack\n0000" +
-      "0041newsha1234567890abcdef1234567890abcdef6789 refs/heads/main\n0000";
+      "001e# service=git-upload-pack\n0000" + "0041newsha1234567890abcdef1234567890abcdef6789 refs/heads/main\n0000";
     global.fetch = vi
       .fn()
       .mockResolvedValueOnce({ ok: true, text: () => Promise.resolve(refsText) })

@@ -228,11 +228,13 @@ export default function (pi: ExtensionAPI) {
   // Skills auto-update on session start
   pi.on("session_start", async (_, ctx) => {
     const skillsRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    checkAndUpdate(log, skillsRoot).then((updated) => {
-      if (updated && ctx.hasUI) {
-        ctx.ui.notify("Skills updated from obra/superpowers. Restart pi to load new skills.", "info");
-      }
-    }).catch(() => {});
+    checkAndUpdate(log, skillsRoot)
+      .then((updated) => {
+        if (updated && ctx.hasUI) {
+          ctx.ui.notify("Skills updated from obra/superpowers. Restart pi to load new skills.", "info");
+        }
+      })
+      .catch(() => {});
   });
 
   // Watch the project config file so hand-edits refresh the widget in real-time.
