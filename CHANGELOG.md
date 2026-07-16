@@ -1,11 +1,19 @@
 # Changelog
 
-All notable changes to pi-superpowers-plus are documented here.
+All notable changes to pipowers are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
+
+## 0.5.0 — 2026-06-23
+
+Renamed from `pi-superpowers-plus` to `pipowers`. Standalone rebrand.
+
+Added: opt-in strict enforcement mode. Process violations (wrong-phase writes, plan_tracker precondition failures, TDD write-order on new features) hard-block on the 1st strike with a UI confirm-prompt. Plan tracker init becomes a precondition for protected-path writes when enabled. Configuration via TOML (`~/.pi/agent/pipowers.toml` and `.pi/pipowers.toml`) with a `/pipwr_config` slash command picker and a TUI status widget.
+
+Default behavior is unchanged (advisory mode). Upgrade by updating the package and removing the old `pi-superpowers-plus` config key if present.
 
 ## [Unreleased]
 

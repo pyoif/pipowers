@@ -22,11 +22,9 @@ describe("logging error handling", () => {
   });
 
   test("write failure emits one-time stderr fallback", () => {
-    // Point logger at an unwritable path
-    const badPath = path.join(tmpDir, "nope", "test.log");
-    fs.mkdirSync(path.join(tmpDir, "nope"));
-    // Make the directory unwritable so appendFileSync fails
-    fs.chmodSync(path.join(tmpDir, "nope"), 0o444);
+    // Point logger at a directory (appendFileSync fails with EISDIR everywhere)
+    const badPath = path.join(tmpDir, "adir");
+    fs.mkdirSync(badPath);
 
     const log = createLogger(badPath);
     log.info("should fail");
@@ -36,9 +34,8 @@ describe("logging error handling", () => {
   });
 
   test("stderr fallback fires only once even with repeated failures", () => {
-    const badPath = path.join(tmpDir, "nope", "test.log");
-    fs.mkdirSync(path.join(tmpDir, "nope"));
-    fs.chmodSync(path.join(tmpDir, "nope"), 0o444);
+    const badPath = path.join(tmpDir, "adir");
+    fs.mkdirSync(badPath);
 
     const log = createLogger(badPath);
     log.info("fail 1");
@@ -49,9 +46,8 @@ describe("logging error handling", () => {
   });
 
   test("logger never throws even when filesystem operations fail", () => {
-    const badPath = path.join(tmpDir, "nope", "test.log");
-    fs.mkdirSync(path.join(tmpDir, "nope"));
-    fs.chmodSync(path.join(tmpDir, "nope"), 0o444);
+    const badPath = path.join(tmpDir, "adir");
+    fs.mkdirSync(badPath);
 
     const log = createLogger(badPath);
 

@@ -5,18 +5,20 @@
  * - Track TDD phase (RED→GREEN→REFACTOR) and inject warnings on violations
  * - Track debug fix-fail cycles and inject warnings on investigation skips / thrashing
  * - Show workflow state in TUI widget
- * - Register workflow_reference tool for on-demand reference content
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { StringEnum } from "@mariozechner/pi-ai";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
-import { Type } from "@sinclair/typebox";
+import { type ClassifierResult, classifyViolation } from "./enforcement-classifier.js";
 import { log } from "./logging.js";
+import { detectLegacyConfig, loadConfig, type PipowersConfig, projectConfigPath } from "./pipowers-config.js";
+import { buildStatusWidget, createConfigWatcher, registerConfigCommand } from "./pipowers-config-ui.js";
+import type { Task } from "./plan-tracker.js";
+import { checkAndUpdate } from "./skills-updater.js";
 import { getCurrentGitRef } from "./workflow-monitor/git";
-import { loadReference, REFERENCE_TOPICS } from "./workflow-monitor/reference-tool";
 import { getUnresolvedPhases, getUnresolvedPhasesBefore } from "./workflow-monitor/skip-confirmation";
 import { parseTestCommand, parseTestResult } from "./workflow-monitor/test-runner";
 import type { VerificationViolation } from "./workflow-monitor/verification-monitor";
@@ -52,10 +54,100 @@ async function selectValue<T extends string>(
   return (picked?.value ?? "cancel") as T;
 }
 
+function getWarningFor(v: ClassifierResult): string {
+  if (v.subCategory === "phase-boundary") {
+    return `⚠️  Phase violation: writing to \`${v.attemptedPath}\` during \`${v.detail.currentPhase}\` phase. Allowed: docs/plans/.`;
+  }
+  if (v.subCategory === "tdd-new-feature") {
+    return `⚠️  TDD: writing to \`${v.attemptedPath}\` without a failing test (TDD phase: ${v.detail.tddPhase}).`;
+  }
+  if (v.bucket === "plan_tracker") {
+    return `⚠️  No plan active. Initialize plan_tracker before writing to \`${v.attemptedPath}\`.`;
+  }
+  return `⚠️  Workflow violation on \`${v.attemptedPath}\`.`;
+}
+
+function getPromptOptions(
+  v: ClassifierResult,
+  config: PipowersConfig,
+): { title: string; choices: { label: string; value: string }[] } {
+  if (v.subCategory === "phase-boundary") {
+    return {
+      title: `Agent attempted write to \`${v.attemptedPath}\` during \`${v.detail.currentPhase}\` phase.`,
+      choices: [
+        { label: "Advance to next phase (recommended)", value: "advance" },
+        ...(config.tunables.workflow.allowOverride
+          ? [{ label: "Override (let it through this once)", value: "override" }]
+          : []),
+        { label: "Stop", value: "stop" },
+      ],
+    };
+  }
+  if (v.subCategory === "tdd-new-feature") {
+    return {
+      title: `Agent attempted write to \`${v.attemptedPath}\` without a failing test.`,
+      choices: [
+        { label: "Run the test first (recommended)", value: "run-test" },
+        ...(config.tunables.workflow.allowOverride
+          ? [{ label: "Override (let it through this once)", value: "override" }]
+          : []),
+        { label: "Stop", value: "stop" },
+      ],
+    };
+  }
+  if (v.bucket === "plan_tracker") {
+    return {
+      title: `Agent attempted write to \`${v.attemptedPath}\` but no plan is active.`,
+      choices: [
+        { label: "Initialize plan (recommended)", value: "init-plan" },
+        ...(config.tunables.workflow.allowOverride
+          ? [{ label: "Override (let it through this once)", value: "override" }]
+          : []),
+        { label: "Stop", value: "stop" },
+      ],
+    };
+  }
+  return { title: "Workflow violation", choices: [{ label: "Stop", value: "stop" }] };
+}
+
+async function performRecovery(
+  action: string,
+  _v: ClassifierResult,
+  // biome-ignore lint/suspicious/noExplicitAny: pi SDK context type
+  ctx: any,
+  handler: WorkflowHandler,
+): Promise<void> {
+  if (action === "advance") {
+    const phase = handler.getWorkflowState()?.currentPhase;
+    if (phase) {
+      const next = {
+        brainstorm: "plan",
+        plan: "execute",
+        execute: "verify",
+        verify: "review",
+        review: "finish",
+      }[phase];
+      if (next) handler.advanceWorkflowTo(next as Phase);
+    }
+  }
+  // "init-plan" and "run-test" don't need server-side recovery: the agent
+  // re-emits the appropriate tool call as part of its next turn. We just
+  // log that the user picked this option.
+  ctx.ui.notify?.(`Recovery: ${action}. Agent will proceed.`);
+}
+
 const SUPERPOWERS_STATE_ENTRY_TYPE = "superpowers_state";
 
-export function getStateFilePath(): string {
+function getOldStateFilePath(): string {
   return path.join(process.cwd(), ".pi", "superpowers-state.json");
+}
+
+function getNewStateFilePath(): string {
+  return path.join(process.cwd(), ".pi", "pipowers-state.json");
+}
+
+export function getStateFilePath(): string {
+  return getNewStateFilePath();
 }
 
 export function reconstructState(ctx: ExtensionContext, handler: WorkflowHandler, stateFilePath?: string | false) {
@@ -64,18 +156,22 @@ export function reconstructState(ctx: ExtensionContext, handler: WorkflowHandler
   // Try file-based state first (survives across sessions)
   // Pass false to disable file-based state (for testing)
   if (stateFilePath !== false) {
-    try {
-      const statePath = stateFilePath ?? getStateFilePath();
-      if (fs.existsSync(statePath)) {
-        const raw = fs.readFileSync(statePath, "utf-8");
+    const newPath = getNewStateFilePath();
+    const oldPath = getOldStateFilePath();
+    const candidates = stateFilePath ? [stateFilePath] : [newPath, oldPath];
+    for (const candidate of candidates) {
+      if (!fs.existsSync(candidate)) continue;
+      try {
+        const raw = fs.readFileSync(candidate, "utf-8");
         const data = JSON.parse(raw);
         handler.setFullState(data);
+        if (candidate === oldPath) {
+          log.info(`Loaded state from legacy ${oldPath}. New writes will go to ${newPath}.`);
+        }
         return;
+      } catch (err) {
+        log.warn(`Failed to read ${candidate}: ${err instanceof Error ? err.message : err}`);
       }
-    } catch (err) {
-      log.warn(
-        `Failed to read state file, falling back to session entries: ${err instanceof Error ? err.message : err}`,
-      );
     }
   }
 
@@ -113,9 +209,43 @@ export default function (pi: ExtensionAPI) {
   const pendingBranchGates = new Map<string, string>();
   const pendingProcessWarnings = new Map<string, string>();
 
-  type ViolationBucket = "process" | "practice";
-  const strikes: Record<ViolationBucket, number> = { process: 0, practice: 0 };
+  type ViolationBucket = "process" | "plan_tracker" | "practice";
+  const strikes: Record<ViolationBucket, number> = { process: 0, plan_tracker: 0, practice: 0 };
   const sessionAllowed: Partial<Record<ViolationBucket, boolean>> = {};
+
+  // Config is loaded async at extension init. Until it resolves, the
+  // classifier is bypassed and the existing TDD/debug fall-through applies.
+  let currentConfig: PipowersConfig | null = null;
+  let currentEffectiveSource: "global" | "project" | "default" = "default";
+  let planTrackerTasks: Task[] = [];
+  (async () => {
+    const { config, effectiveSource } = await loadConfig();
+    currentConfig = config;
+    currentEffectiveSource = effectiveSource ?? "default";
+    await detectLegacyConfig();
+  })();
+
+  // Fire-and-forget skills update (non-blocking, errors logged internally)
+  const skillsRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  checkAndUpdate(log, skillsRoot).catch((err) => {
+    log.warn(`skills-update: unhandled error: ${err instanceof Error ? err.message : String(err)}`);
+  });
+
+  // Watch the project config file so hand-edits refresh the widget in real-time.
+  const projectConfig = projectConfigPath();
+  if (fs.existsSync(path.dirname(projectConfig))) {
+    const watcher = createConfigWatcher({
+      projectPath: projectConfig,
+      onChange: async () => {
+        const { config, effectiveSource } = await loadConfig();
+        currentConfig = config;
+        currentEffectiveSource = effectiveSource ?? "default";
+      },
+      debounceMs: 250,
+    });
+    watcher.start();
+    // Stash the watcher so it isn't GC'd. On session teardown, call watcher.stop().
+  }
 
   async function maybeEscalate(bucket: ViolationBucket, ctx: ExtensionContext): Promise<"allow" | "block"> {
     if (!ctx.hasUI) return "allow";
@@ -151,7 +281,8 @@ export default function (pi: ExtensionAPI) {
     try {
       const statePath = getStateFilePath();
       fs.mkdirSync(path.dirname(statePath), { recursive: true });
-      fs.writeFileSync(statePath, JSON.stringify(handler.getFullState(), null, 2));
+      const fullState = { version: 2, ...handler.getFullState() };
+      fs.writeFileSync(statePath, JSON.stringify(fullState, null, 2));
     } catch (err) {
       log.warn(`Failed to persist state file: ${err instanceof Error ? err.message : err}`);
     }
@@ -204,10 +335,13 @@ export default function (pi: ExtensionAPI) {
       pendingProcessWarnings.clear();
       strikes.process = 0;
       strikes.practice = 0;
+      strikes.plan_tracker = 0;
       delete sessionAllowed.process;
       delete sessionAllowed.practice;
+      delete sessionAllowed.plan_tracker;
       branchNoticeShown = false;
       branchConfirmed = false;
+      planTrackerTasks = [];
       updateWidget(ctx);
     });
   }
@@ -421,6 +555,38 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     const toolCallId = event.toolCallId;
 
+    // Classifier check (strict mode). Runs first; if the classifier says we
+    // should hard-block, we handle it here and bail. In advisory mode the
+    // classifier defers to the existing TDD/debug/branch logic below.
+    if (currentConfig) {
+      const violation = classifyViolation({
+        toolName: event.toolName,
+        input: event.input as Record<string, unknown>,
+        config: currentConfig,
+        workflowPhase: handler.getWorkflowState()?.currentPhase ?? null,
+        isPlanTrackerInitialized: handler.isPlanTrackerInitialized(),
+        tddPhase: handler.getTddPhase(),
+      });
+      if (violation?.shouldBlock) {
+        strikes[violation.bucket] = (strikes[violation.bucket] ?? 0) + 1;
+        if (!ctx.hasUI) {
+          return { warning: getWarningFor(violation) };
+        }
+        const promptOptions = getPromptOptions(violation, currentConfig);
+        const picked = await selectValue(ctx, promptOptions.title, promptOptions.choices);
+        if (picked === "stop") {
+          return { blocked: true, reason: violation.reason, attemptedPath: violation.attemptedPath };
+        }
+        if (picked === "override") {
+          strikes[violation.bucket] = 0;
+          return;
+        }
+        // "advance" or "init-plan" or "run-test": perform the recovery and allow
+        await performRecovery(picked, violation, ctx, handler);
+        return;
+      }
+    }
+
     if (event.toolName === "bash") {
       // biome-ignore lint/suspicious/noExplicitAny: pi SDK event input type
       const command = ((event.input as Record<string, any>).command as string | undefined) ?? "";
@@ -514,6 +680,24 @@ export default function (pi: ExtensionAPI) {
 
     if (event.toolName === "plan_tracker") {
       changed = handler.handlePlanTrackerToolCall(input) || changed;
+      // biome-ignore lint/suspicious/noExplicitAny: plan_tracker input.action
+      const planAction = (input as any).action;
+      if (planAction === "init") {
+        handler.setPlanTrackerInitialized(true);
+        const initTasks = ((input as any).tasks as string[] | undefined) ?? [];
+        planTrackerTasks = initTasks.map((name) => ({ name, status: "pending" as Task["status"] }));
+        changed = true;
+      } else if (planAction === "update") {
+        const idx = (input as any).index as number | undefined;
+        const status = (input as any).status as Task["status"] | undefined;
+        if (typeof idx === "number" && status && idx >= 0 && idx < planTrackerTasks.length) {
+          planTrackerTasks[idx] = { ...planTrackerTasks[idx], status };
+          changed = true;
+        }
+      } else if (planAction === "clear") {
+        planTrackerTasks = [];
+        changed = true;
+      }
     }
 
     if (changed) {
@@ -703,6 +887,19 @@ export default function (pi: ExtensionAPI) {
   function updateWidget(ctx: ExtensionContext) {
     if (!ctx.hasUI) return;
 
+    // Register the pipowers status widget first so existing tests that
+    // capture the last setWidget call resolve to the workflow_monitor
+    // renderer below. The widget reads live from closure-scoped state via
+    // the getter functions.
+    ctx.ui.setWidget(
+      "pipowers_status",
+      buildStatusWidget(
+        () => currentConfig,
+        () => planTrackerTasks,
+        () => currentEffectiveSource,
+      ),
+    );
+
     const tddPhase = handler.getTddPhase().toUpperCase();
     const hasDebug = handler.isDebugActive();
     const workflow = handler.getWorkflowState();
@@ -748,10 +945,21 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
+  registerConfigCommand(
+    pi,
+    () => currentConfig,
+    async () => {
+      const result = await loadConfig();
+      currentConfig = result.config;
+      currentEffectiveSource = result.effectiveSource;
+    },
+  );
+
   pi.registerCommand("workflow-reset", {
     description: "Reset workflow tracker to fresh state for a new task",
     async handler(_args, ctx) {
       handler.resetState();
+      planTrackerTasks = [];
       persistState();
       updateWidget(ctx);
       if (ctx.hasUI) {
@@ -799,37 +1007,6 @@ export default function (pi: ExtensionAPI) {
 
       ctx.ui.setEditorText(lines.join("\n"));
       ctx.ui.notify("New session ready. Submit when ready.", "info");
-    },
-  });
-
-  // --- Reference Tool ---
-  pi.registerTool({
-    name: "workflow_reference",
-    label: "Workflow Reference",
-    description: `Detailed guidance for workflow skills. Topics: ${REFERENCE_TOPICS.join(", ")}`,
-    parameters: Type.Object({
-      topic: StringEnum(REFERENCE_TOPICS as unknown as readonly [string, ...string[]], {
-        description: "Reference topic to load",
-      }),
-    }),
-    async execute(_toolCallId, params) {
-      const content = await loadReference(params.topic);
-      return {
-        content: [{ type: "text", text: content }],
-        details: { topic: params.topic },
-      };
-    },
-    renderCall(args, theme) {
-      let text = theme.fg("toolTitle", theme.bold("workflow_reference "));
-      text += theme.fg("accent", args.topic);
-      return new Text(text, 0, 0);
-    },
-    renderResult(result, _options, theme) {
-      // biome-ignore lint/suspicious/noExplicitAny: pi SDK event details type
-      const topic = (result.details as any)?.topic ?? "unknown";
-      const content = result.content[0];
-      const len = content?.type === "text" ? content.text.length : 0;
-      return new Text(theme.fg("success", "✓ ") + theme.fg("muted", `${topic} (${len} chars)`), 0, 0);
     },
   });
 }
