@@ -114,22 +114,25 @@ export function registerConfigCommand(
     getConfig: () => PipowersConfig | null,
     refreshConfig: () => Promise<void>,
 ): void {
-    pi.registerCommand("pipwr_config", async (args, ctx) => {
-        const current = getConfig()?.enforcement ?? "advisory";
-        const layer: ConfigLayer = await pickLayer(ctx, "project");
-        const newMode = await pickMode(ctx, current);
-        if (newMode === current && layer === "project") {
-            ctx.ui.notify?.("No change.");
-            return;
-        }
-        if (newMode === "custom") {
-            const tunables = await pickTunables(ctx, getConfig() ?? ADVISORY_DEFAULTS);
-            await saveConfig(layer, { enforcement: "custom", tunables });
-        } else {
-            await saveConfig(layer, { enforcement: newMode });
-        }
-        await refreshConfig();
-        ctx.ui.notify?.(`Config saved (${layer}).`);
+    pi.registerCommand("pipwr_config", {
+        description: "Configure pipowers enforcement mode and tunables",
+        async handler(_args, ctx) {
+            const current = getConfig()?.enforcement ?? "advisory";
+            const layer: ConfigLayer = await pickLayer(ctx, "project");
+            const newMode = await pickMode(ctx, current);
+            if (newMode === current && layer === "project") {
+                ctx.ui.notify?.("No change.");
+                return;
+            }
+            if (newMode === "custom") {
+                const tunables = await pickTunables(ctx, getConfig() ?? ADVISORY_DEFAULTS);
+                await saveConfig(layer, { enforcement: "custom", tunables });
+            } else {
+                await saveConfig(layer, { enforcement: newMode });
+            }
+            await refreshConfig();
+            ctx.ui.notify?.(`Config saved (${layer}).`);
+        },
     });
 }
 
