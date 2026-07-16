@@ -4,5 +4,9 @@ node_modules/
 .kotadb/
 .pi/superpowers-state.json
 .pi/pipowers-state.json
+.pi/
+agents/
 
 docs/
+
+nul

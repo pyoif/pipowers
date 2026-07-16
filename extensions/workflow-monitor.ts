@@ -5,22 +5,20 @@
  * - Track TDD phase (RED→GREEN→REFACTOR) and inject warnings on violations
  * - Track debug fix-fail cycles and inject warnings on investigation skips / thrashing
  * - Show workflow state in TUI widget
- * - Register workflow_reference tool for on-demand reference content
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { StringEnum } from "@mariozechner/pi-ai";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
-import { Type } from "@sinclair/typebox";
 import { type ClassifierResult, classifyViolation } from "./enforcement-classifier.js";
 import { log } from "./logging.js";
-import { loadConfig, type PipowersConfig, projectConfigPath, detectLegacyConfig } from "./pipowers-config.js";
+import { detectLegacyConfig, loadConfig, type PipowersConfig, projectConfigPath } from "./pipowers-config.js";
 import { buildStatusWidget, createConfigWatcher, registerConfigCommand } from "./pipowers-config-ui.js";
 import type { Task } from "./plan-tracker.js";
+import { checkAndUpdate } from "./skills-updater.js";
 import { getCurrentGitRef } from "./workflow-monitor/git";
-import { loadReference, REFERENCE_TOPICS } from "./workflow-monitor/reference-tool";
 import { getUnresolvedPhases, getUnresolvedPhasesBefore } from "./workflow-monitor/skip-confirmation";
 import { parseTestCommand, parseTestResult } from "./workflow-monitor/test-runner";
 import type { VerificationViolation } from "./workflow-monitor/verification-monitor";
@@ -226,6 +224,12 @@ export default function (pi: ExtensionAPI) {
     currentEffectiveSource = effectiveSource ?? "default";
     await detectLegacyConfig();
   })();
+
+  // Fire-and-forget skills update (non-blocking, errors logged internally)
+  const skillsRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  checkAndUpdate(log, skillsRoot).catch((err) => {
+    log.warn(`skills-update: unhandled error: ${err instanceof Error ? err.message : String(err)}`);
+  });
 
   // Watch the project config file so hand-edits refresh the widget in real-time.
   const projectConfig = projectConfigPath();
@@ -941,11 +945,15 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  registerConfigCommand(pi, () => currentConfig, async () => {
-    const result = await loadConfig();
-    currentConfig = result.config;
-    currentEffectiveSource = result.effectiveSource;
-  });
+  registerConfigCommand(
+    pi,
+    () => currentConfig,
+    async () => {
+      const result = await loadConfig();
+      currentConfig = result.config;
+      currentEffectiveSource = result.effectiveSource;
+    },
+  );
 
   pi.registerCommand("workflow-reset", {
     description: "Reset workflow tracker to fresh state for a new task",
@@ -999,37 +1007,6 @@ export default function (pi: ExtensionAPI) {
 
       ctx.ui.setEditorText(lines.join("\n"));
       ctx.ui.notify("New session ready. Submit when ready.", "info");
-    },
-  });
-
-  // --- Reference Tool ---
-  pi.registerTool({
-    name: "workflow_reference",
-    label: "Workflow Reference",
-    description: `Detailed guidance for workflow skills. Topics: ${REFERENCE_TOPICS.join(", ")}`,
-    parameters: Type.Object({
-      topic: StringEnum(REFERENCE_TOPICS as unknown as readonly [string, ...string[]], {
-        description: "Reference topic to load",
-      }),
-    }),
-    async execute(_toolCallId, params) {
-      const content = await loadReference(params.topic);
-      return {
-        content: [{ type: "text", text: content }],
-        details: { topic: params.topic },
-      };
-    },
-    renderCall(args, theme) {
-      let text = theme.fg("toolTitle", theme.bold("workflow_reference "));
-      text += theme.fg("accent", args.topic);
-      return new Text(text, 0, 0);
-    },
-    renderResult(result, _options, theme) {
-      // biome-ignore lint/suspicious/noExplicitAny: pi SDK event details type
-      const topic = (result.details as any)?.topic ?? "unknown";
-      const content = result.content[0];
-      const len = content?.type === "text" ? content.text.length : 0;
-      return new Text(theme.fg("success", "✓ ") + theme.fg("muted", `${topic} (${len} chars)`), 0, 0);
     },
   });
 }
