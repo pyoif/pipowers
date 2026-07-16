@@ -14,8 +14,14 @@ function withTempSetup<T>(fn: (home: string, cwd: string) => Promise<T>): Promis
     fs.rmSync(cwd, { recursive: true, force: true });
   };
   return fn(home, cwd).then(
-    (v) => { cleanup(); return v; },
-    (e) => { cleanup(); throw e; },
+    (v) => {
+      cleanup();
+      return v;
+    },
+    (e) => {
+      cleanup();
+      throw e;
+    },
   );
 }
 

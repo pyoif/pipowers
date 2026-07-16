@@ -69,8 +69,14 @@ function withTempHome<T>(fn: (home: string, cwd: string) => Promise<T> | T): Pro
     const result = fn(home, cwd);
     const promise = result instanceof Promise ? result : Promise.resolve(result);
     return promise.then(
-      (v) => { cleanup(); return v; },
-      (e) => { cleanup(); throw e; },
+      (v) => {
+        cleanup();
+        return v;
+      },
+      (e) => {
+        cleanup();
+        throw e;
+      },
     );
   } catch (err) {
     cleanup();
