@@ -290,7 +290,7 @@ describe("checkAndUpdate", () => {
   test("never throws even on complete failure", async () => {
     global.fetch = vi.fn().mockRejectedValue(new Error("all broken"));
     const l = mockLog();
-    await expect(checkAndUpdate(l, tmpRoot)).resolves.toBeUndefined();
+    await expect(checkAndUpdate(l, tmpRoot)).resolves.toBe(false);
     expect(l.warn).toHaveBeenCalled();
   });
 });

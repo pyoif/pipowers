@@ -166,7 +166,7 @@ export async function downloadAndExtract(skillsDir: string, _sha: string): Promi
   }
 }
 
-export async function checkAndUpdate(log: Logger, packageRoot: string): Promise<void> {
+export async function checkAndUpdate(log: Logger, packageRoot: string): Promise<boolean> {
   const skillsDir = path.join(packageRoot, "skills");
 
   try {
@@ -174,30 +174,32 @@ export async function checkAndUpdate(log: Logger, packageRoot: string): Promise<
 
     if (!shouldCheck(skillsDir, saved.lastCheck ?? new Date(0).toISOString())) {
       log.debug("skills-update: throttled");
-      return;
+      return false;
     }
 
     const latestSha = await getLatestCommitSha();
     if (!latestSha) {
       log.warn("skills-update: could not fetch latest commit sha");
-      return;
+      return false;
     }
 
     if (saved.sha === latestSha) {
       log.debug(`skills-update: already at latest (${latestSha.slice(0, 7)})`);
       saveState(packageRoot, { sha: latestSha, lastCheck: new Date().toISOString() });
-      return;
+      return false;
     }
 
     const ok = await downloadAndExtract(skillsDir, latestSha);
     if (!ok) {
       log.warn("skills-update: download and extract failed");
-      return;
+      return false;
     }
 
     log.info(`skills-update: updated to commit ${latestSha.slice(0, 7)}`);
     saveState(packageRoot, { sha: latestSha, lastCheck: new Date().toISOString() });
+    return true;
   } catch (err) {
     log.warn(`skills-update: unhandled error: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
   }
 }

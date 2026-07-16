@@ -225,10 +225,14 @@ export default function (pi: ExtensionAPI) {
     await detectLegacyConfig();
   })();
 
-  // Fire-and-forget skills update (non-blocking, errors logged internally)
-  const skillsRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-  checkAndUpdate(log, skillsRoot).catch((err) => {
-    log.warn(`skills-update: unhandled error: ${err instanceof Error ? err.message : String(err)}`);
+  // Skills auto-update on session start
+  pi.on("session_start", async (_, ctx) => {
+    const skillsRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    checkAndUpdate(log, skillsRoot).then((updated) => {
+      if (updated && ctx.hasUI) {
+        ctx.ui.notify("Skills updated from obra/superpowers. Restart pi to load new skills.", "info");
+      }
+    }).catch(() => {});
   });
 
   // Watch the project config file so hand-edits refresh the widget in real-time.
